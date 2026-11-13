@@ -1,414 +1,60 @@
 #!/usr/bin/env python3
-"""Instalador e servidor do Studio Contact."""
-
+"""Studio Contact: instalador local e launcher Django para o Studio."""
 import argparse
-import base64
-import hmac
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
+import shutil
 import subprocess
 import sys
 import venv
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = Path(__file__).resolve().parent
-
-PAGE = """<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Studio Contact</title>
-<link rel="stylesheet" href="/style.css">
-<script src="/app.js" defer></script>
-</head>
-<body>
-<header><a href="/">◈ Studio Contact</a><a href="/admin">Área da equipe ↗</a></header>
-<main>
-<section>
-<span class="tag">IDEIAS QUE CONECTAM</span>
-<h1>Uma boa conversa<br>começa aqui.</h1>
-<p>Conte sua ideia. Sua mensagem será registrada para nossa equipe.</p>
-</section>
-<section class="card">
-<h2>Vamos conversar</h2>
-<form id="contact">
-<label>Nome<input name="name" maxlength="100" autocomplete="name" required></label>
-<label>E-mail<input name="email" type="email" maxlength="254" autocomplete="email" required></label>
-<label>Mensagem<textarea name="message" maxlength="3000" rows="5" required></textarea></label>
-<button>Enviar mensagem ↗</button>
-<p id="feedback" role="status"></p>
-</form>
-</section>
-</main>
-</body>
-</html>
-"""
-
-ADMIN = """<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mensagens — Studio Contact</title>
-<link rel="stylesheet" href="/style.css">
-<script src="/app.js" defer></script>
-</head>
-<body>
-<header><a href="/">◈ Studio Contact</a><a href="/">← Voltar ao site</a></header>
-<main>
-<section><span class="tag">ÁREA DA EQUIPE</span><h1>Caixa de entrada.</h1>
-<p>Consulte as últimas 100 mensagens.</p></section>
-<section class="card">
-<form id="admin">
-<label>Senha da equipe<input name="password" type="password" autocomplete="current-password" required></label>
-<button>Consultar mensagens</button>
-<p id="feedback" role="status"></p>
-</form>
-<div id="messages"></div>
-</section>
-</main>
-</body>
-</html>
-"""
-
-CSS = """
-*{box-sizing:border-box}
-body{margin:0;background:#f3f5f9;color:#19253b;font-family:system-ui,sans-serif}
-header{max-width:1160px;margin:auto;padding:28px;display:flex;justify-content:space-between;gap:20px}
-a{color:inherit;text-decoration:none;font-weight:600}
-main{max-width:1160px;margin:60px auto;padding:28px;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
-.tag{font-size:12px;letter-spacing:2px;color:#684be0;font-weight:800}
-h1{font-size:clamp(36px,4vw,56px);line-height:1.1;letter-spacing:-2px}
-h2{margin-top:0}
-p{color:#59677c;line-height:1.7}
-.card{padding:32px;border-radius:24px;background:white;border:1px solid #e1e5ee;box-shadow:0 20px 60px #23385a09}
-label{display:block;margin-top:20px;font-size:14px;font-weight:600}
-input,textarea{width:100%;display:block;margin-top:8px;padding:13px;border:1px solid #ccd3df;border-radius:10px;font:inherit;background:#fbfcff;transition:box-shadow .2s,border-color .2s}
-textarea{resize:vertical}
-input:focus,textarea:focus{outline:none;border-color:#684be0;box-shadow:0 0 0 4px #684be018}
-button{width:100%;margin-top:24px;padding:15px;border:0;border-radius:10px;background:#6248dc;color:white;font:inherit;font-weight:600;cursor:pointer;transition:transform .2s,background .2s}
-button:hover{background:#4c34bd;transform:translateY(-1px)}
-button:disabled{opacity:.6;cursor:wait;transform:none}
-button:focus-visible,a:focus-visible{outline:3px solid #9980ff;outline-offset:4px}
-#feedback{min-height:24px;font-size:14px}
-article{border-top:1px solid #e1e5ee;margin-top:24px;padding-top:12px;overflow-wrap:anywhere}
-article p{white-space:pre-wrap}
-@media(max-width:760px){main{grid-template-columns:1fr;margin-top:15px;gap:24px}.card{padding:24px}}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}}
-"""
-
-JS = """
-const form = document.querySelector('form');
-const feedback = document.querySelector('#feedback');
-
-form.addEventListener('submit', async event => {
-  event.preventDefault();
-  const button = form.querySelector('button');
-  const admin = form.id === 'admin';
-  const data = Object.fromEntries(new FormData(form));
-
-  button.disabled = true;
-  feedback.textContent = admin ? 'Consultando…' : 'Enviando…';
-
-  if (admin) document.querySelector('#messages').replaceChildren();
-
-  try {
-    const options = admin
-      ? {headers: {
-          Authorization: 'Basic ' + btoa(
-            String.fromCharCode(...new TextEncoder().encode('admin:' + data.password))
-          )
-        }}
-      : {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(data)
-        };
-
-    const response = await fetch('/api/messages', options);
-    const result = await response.json();
-
-    if (!response.ok) throw new Error(result.error || 'Não foi possível concluir.');
-
-    if (admin) {
-      feedback.textContent = result.messages.length + ' mensagem(ns) encontrada(s).';
-
-      for (const message of result.messages) {
-        const article = document.createElement('article');
-
-        for (const [tag, text] of [
-          ['h3', message.name],
-          ['p', message.email],
-          ['small', new Date(message.created_at).toLocaleString('pt-BR')],
-          ['p', message.message]
-        ]) {
-          const element = document.createElement(tag);
-          element.textContent = text;
-          article.append(element);
-        }
-
-        document.querySelector('#messages').append(article);
-      }
-    } else {
-      feedback.textContent = result.message + ' Protocolo #' + result.id + '.';
-    }
-
-    form.reset();
-  } catch (error) {
-    feedback.textContent = error.message;
-  } finally {
-    button.disabled = false;
-  }
-});
-"""
+FILES = json.loads('{"requirements.txt": "Django>=5.2.8,<5.3\\npsycopg[binary]==3.3.2\\ngunicorn>=23,<24\\n", "manage.py": "import os\\nimport sys\\nos.environ.setdefault(\\"DJANGO_SETTINGS_MODULE\\", \\"config.settings\\")\\nfrom django.core.management import execute_from_command_line\\nexecute_from_command_line(sys.argv)\\n", "config/__init__.py": "", "config/settings.py": "import os\\nfrom pathlib import Path\\nfrom urllib.parse import urlsplit, unquote, parse_qs\\nBASE_DIR = Path(__file__).resolve().parent.parent\\nSECRET_KEY = os.environ.get(\\"SECRET_KEY\\", \\"\\")\\nif not SECRET_KEY:\\n    raise RuntimeError(\\"Configure SECRET_KEY nas variáveis do app.\\")\\nDEBUG = os.environ.get(\\"DEBUG\\", \\"false\\").lower() == \\"true\\"\\nALLOWED_HOSTS = [host.strip() for host in os.environ.get(\\"ALLOWED_HOSTS\\", \\"localhost,127.0.0.1\\").split(\\",\\") if host.strip()]\\nCSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.environ.get(\\"CSRF_TRUSTED_ORIGINS\\", \\"\\").split(\\",\\") if origin.strip()]\\nINSTALLED_APPS = [\\"django.contrib.admin\\", \\"django.contrib.auth\\", \\"django.contrib.contenttypes\\", \\"django.contrib.sessions\\", \\"django.contrib.messages\\", \\"django.contrib.staticfiles\\", \\"contacts\\"]\\nMIDDLEWARE = [\\"django.middleware.security.SecurityMiddleware\\", \\"django.contrib.sessions.middleware.SessionMiddleware\\", \\"django.middleware.common.CommonMiddleware\\", \\"django.middleware.csrf.CsrfViewMiddleware\\", \\"django.contrib.auth.middleware.AuthenticationMiddleware\\", \\"django.contrib.messages.middleware.MessageMiddleware\\", \\"django.middleware.clickjacking.XFrameOptionsMiddleware\\"]\\nROOT_URLCONF = \\"config.urls\\"\\nTEMPLATES = [{\\"BACKEND\\": \\"django.template.backends.django.DjangoTemplates\\", \\"DIRS\\": [BASE_DIR / \\"templates\\"], \\"APP_DIRS\\": True, \\"OPTIONS\\": {\\"context_processors\\": [\\"django.template.context_processors.request\\", \\"django.contrib.auth.context_processors.auth\\", \\"django.contrib.messages.context_processors.messages\\"]}}]\\nWSGI_APPLICATION = \\"config.wsgi.application\\"\\nurl = urlsplit(os.environ.get(\\"DATABASE_URL\\", \\"\\"))\\nif url.scheme not in (\\"postgres\\", \\"postgresql\\") or not url.hostname or not url.path.strip(\\"/\\"):\\n    raise RuntimeError(\\"Configure DATABASE_URL com a URL PostgreSQL fornecida pelo Studio.\\")\\nquery = parse_qs(url.query)\\nDATABASES = {\\"default\\": {\\"ENGINE\\": \\"django.db.backends.postgresql\\", \\"NAME\\": unquote(url.path.lstrip(\\"/\\")), \\"USER\\": unquote(url.username or \\"\\"), \\"PASSWORD\\": unquote(url.password or \\"\\"), \\"HOST\\": url.hostname, \\"PORT\\": url.port or 5432, \\"CONN_MAX_AGE\\": 0, \\"OPTIONS\\": {\\"connect_timeout\\": 5, **{key: values[-1] for key, values in query.items() if key in (\\"sslmode\\", \\"sslrootcert\\")}}}}\\nAUTH_PASSWORD_VALIDATORS = [{\\"NAME\\": \\"django.contrib.auth.password_validation.UserAttributeSimilarityValidator\\"}, {\\"NAME\\": \\"django.contrib.auth.password_validation.MinimumLengthValidator\\"}, {\\"NAME\\": \\"django.contrib.auth.password_validation.CommonPasswordValidator\\"}, {\\"NAME\\": \\"django.contrib.auth.password_validation.NumericPasswordValidator\\"}]\\nLANGUAGE_CODE = \\"pt-br\\"\\nTIME_ZONE = \\"America/Sao_Paulo\\"\\nUSE_I18N = True\\nUSE_TZ = True\\nSTATIC_URL = \\"/static/\\"\\nDEFAULT_AUTO_FIELD = \\"django.db.models.BigAutoField\\"\\nLOGIN_URL = \\"/equipe/login/\\"\\nLOGIN_REDIRECT_URL = \\"/equipe/\\"\\nLOGOUT_REDIRECT_URL = \\"/\\"\\nSESSION_COOKIE_HTTPONLY = True\\nSESSION_COOKIE_SECURE = not DEBUG\\nCSRF_COOKIE_SECURE = not DEBUG\\nSECURE_CONTENT_TYPE_NOSNIFF = True\\nX_FRAME_OPTIONS = \\"DENY\\"\\n# Habilite apenas se o proxy confiável substituir esse header.\\nif os.environ.get(\\"TRUST_PROXY_HTTPS\\", \\"false\\").lower() == \\"true\\":\\n    SECURE_PROXY_SSL_HEADER = (\\"HTTP_X_FORWARDED_PROTO\\", \\"https\\")\\nDATA_UPLOAD_MAX_MEMORY_SIZE = 32768\\n", "config/wsgi.py": "import os\\nfrom django.core.wsgi import get_wsgi_application\\nos.environ.setdefault(\\"DJANGO_SETTINGS_MODULE\\", \\"config.settings\\")\\napplication = get_wsgi_application()\\n", "config/urls.py": "from django.contrib.auth import views as auth_views\\nfrom django.urls import path\\nfrom contacts import views\\nurlpatterns = [\\n    path(\\"\\", views.contact, name=\\"contact\\"),\\n    path(\\"healthz\\", views.health, name=\\"health\\"),\\n    path(\\"equipe/\\", views.inbox, name=\\"inbox\\"),\\n    path(\\"equipe/login/\\", auth_views.LoginView.as_view(template_name=\\"login.html\\"), name=\\"login\\"),\\n    path(\\"equipe/sair/\\", auth_views.LogoutView.as_view(), name=\\"logout\\"),\\n]\\n", "contacts/__init__.py": "", "contacts/models.py": "from django.db import models\\n\\nclass ContactMessage(models.Model):\\n    name = models.CharField(\\"Nome\\", max_length=100)\\n    email = models.EmailField(\\"E-mail\\")\\n    message = models.TextField(\\"Mensagem\\", max_length=3000)\\n    created_at = models.DateTimeField(\\"Recebida em\\", auto_now_add=True)\\n\\n    class Meta:\\n        ordering = [\\"-created_at\\", \\"-pk\\"]\\n        verbose_name = \\"Mensagem de contato\\"\\n        verbose_name_plural = \\"Mensagens de contato\\"\\n\\n    def __str__(self):\\n        return f\\"{self.name} — #{self.pk}\\"\\n", "contacts/forms.py": "from django import forms\\nfrom .models import ContactMessage\\n\\nclass ContactForm(forms.ModelForm):\\n    class Meta:\\n        model = ContactMessage\\n        fields = [\\"name\\", \\"email\\", \\"message\\"]\\n        widgets = {\\"name\\": forms.TextInput(attrs={\\"autocomplete\\": \\"name\\"}), \\"email\\": forms.EmailInput(attrs={\\"autocomplete\\": \\"email\\"}), \\"message\\": forms.Textarea(attrs={\\"rows\\": 5, \\"maxlength\\": 3000})}\\n", "contacts/views.py": "import logging\\nfrom django.contrib import messages\\nfrom django.contrib.admin.views.decorators import staff_member_required\\nfrom django.db import DatabaseError\\nfrom django.http import JsonResponse\\nfrom django.shortcuts import redirect, render\\nfrom django.views.decorators.http import require_GET, require_http_methods\\nfrom .forms import ContactForm\\nfrom .models import ContactMessage\\n\\n@require_http_methods([\\"GET\\", \\"POST\\"])\\ndef contact(request):\\n    form = ContactForm(request.POST if request.method == \\"POST\\" else None)\\n    if request.method == \\"POST\\" and form.is_valid():\\n        try:\\n            record = form.save()\\n        except DatabaseError:\\n            logging.getLogger(__name__).exception(\\"Unable to store contact message\\")\\n            form.add_error(None, \\"Não foi possível salvar. Tente novamente.\\")\\n            return render(request, \\"contact.html\\", {\\"form\\": form}, status=503)\\n        messages.success(request, f\\"Mensagem recebida com sucesso. Protocolo #{record.pk}.\\")\\n        return redirect(\\"contact\\")\\n    return render(request, \\"contact.html\\", {\\"form\\": form})\\n\\n@staff_member_required(login_url=\\"login\\")\\n@require_GET\\ndef inbox(request):\\n    return render(request, \\"inbox.html\\", {\\"records\\": ContactMessage.objects.all()[:100]})\\n\\n@require_GET\\ndef health(request):\\n    try:\\n        list(ContactMessage.objects.values_list(\\"pk\\", flat=True)[:1])\\n        return JsonResponse({\\"status\\": \\"ok\\", \\"database\\": \\"ready\\"})\\n    except DatabaseError:\\n        return JsonResponse({\\"status\\": \\"unavailable\\"}, status=503)\\n", "contacts/migrations/__init__.py": "", "contacts/migrations/0001_initial.py": "from django.db import migrations, models\\n\\nclass Migration(migrations.Migration):\\n    initial = True\\n    dependencies = []\\n    operations = [migrations.CreateModel(\\n        name=\\"ContactMessage\\",\\n        fields=[\\n            (\\"id\\", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name=\\"ID\\")),\\n            (\\"name\\", models.CharField(max_length=100, verbose_name=\\"Nome\\")),\\n            (\\"email\\", models.EmailField(max_length=254, verbose_name=\\"E-mail\\")),\\n            (\\"message\\", models.TextField(max_length=3000, verbose_name=\\"Mensagem\\")),\\n            (\\"created_at\\", models.DateTimeField(auto_now_add=True, verbose_name=\\"Recebida em\\")),\\n        ],\\n        options={\\"ordering\\": [\\"-created_at\\", \\"-pk\\"], \\"verbose_name\\": \\"Mensagem de contato\\", \\"verbose_name_plural\\": \\"Mensagens de contato\\"},\\n    )]\\n", "contacts/tests.py": "from django.contrib.auth import get_user_model\\nfrom django.test import TestCase, override_settings\\nfrom .models import ContactMessage\\n\\n@override_settings(SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=[\\"testserver\\"])\\nclass ContactTests(TestCase):\\n    def test_form_persists_message(self):\\n        response = self.client.post(\\"/\\", {\\"name\\": \\"Teste\\", \\"email\\": \\"test@example.com\\", \\"message\\": \\"Olá\\"})\\n        self.assertEqual(response.status_code, 302)\\n        self.assertEqual(ContactMessage.objects.get().message, \\"Olá\\")\\n        self.assertEqual(self.client.get(\\"/healthz\\").status_code, 200)\\n\\n    def test_invalid_form_does_not_write(self):\\n        self.client.post(\\"/\\", {\\"name\\": \\"Teste\\", \\"email\\": \\"invalid\\", \\"message\\": \\"Olá\\"})\\n        self.assertEqual(ContactMessage.objects.count(), 0)\\n\\n    def test_inbox_requires_staff(self):\\n        self.assertEqual(self.client.get(\\"/equipe/\\").status_code, 302)\\n        user = get_user_model().objects.create_user(username=\\"visitor\\", password=\\"test-only-password\\")\\n        self.client.force_login(user)\\n        self.assertEqual(self.client.get(\\"/equipe/\\").status_code, 302)\\n        user.is_staff = True\\n        user.save()\\n        ContactMessage.objects.create(name=\\"Teste\\", email=\\"test@example.com\\", message=\\"<script>alert(1)</script>\\")\\n        response = self.client.get(\\"/equipe/\\")\\n        self.assertContains(response, \\"&lt;script&gt;\\")\\n        self.assertNotContains(response, \\"<script>alert(1)</script>\\")\\n", "templates/base.html": "<!doctype html><html lang=\\"pt-BR\\"><head><meta charset=\\"utf-8\\"><meta name=\\"viewport\\" content=\\"width=device-width,initial-scale=1\\"><title>Studio Contact</title><style>*{box-sizing:border-box}body{margin:0;background:#f3f5f9;color:#19253b;font-family:system-ui,sans-serif}header,main{max-width:1100px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;gap:20px}a{color:#6048dc;text-decoration:none}main{margin:40px auto;display:grid;grid-template-columns:1fr 1fr;gap:50px;align-items:center}h1{font-size:clamp(36px,4vw,54px);line-height:1.1;letter-spacing:-2px}.tag{color:#684be0;font-size:12px;font-weight:800;letter-spacing:2px}.card{padding:30px;background:white;border:1px solid #e1e5ee;border-radius:24px;box-shadow:0 20px 60px #23385a09}label{display:block;font-weight:600;margin-bottom:8px}input,textarea{display:block;width:100%;padding:12px;border:1px solid #ccd3df;border-radius:10px;font:inherit}input:focus,textarea:focus{outline:3px solid #684be025;border-color:#684be0}button{padding:14px 22px;border:0;border-radius:10px;background:#6048dc;color:white;font:inherit;cursor:pointer;transition:transform .2s,background .2s}button:hover{transform:translateY(-1px);background:#4c34bd}.errorlist{color:#a12636}article{border-top:1px solid #e1e5ee;padding:16px 0;overflow-wrap:anywhere}.message{white-space:pre-wrap}.wide{grid-column:1/-1}.notice{padding:14px;background:#e4f5eb;border-radius:10px}p{line-height:1.7;color:#58657a}@media(max-width:760px){main{grid-template-columns:1fr;gap:20px;margin-top:10px}.card{padding:22px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style></head><body><header><a href=\\"{% url \'contact\' %}\\">◈ Studio Contact</a><a href=\\"{% url \'inbox\' %}\\">Área da equipe ↗</a></header><main>{% block content %}{% endblock %}</main></body></html>", "templates/contact.html": "{% extends \'base.html\' %}{% block content %}<section><span class=\\"tag\\">IDEIAS QUE CONECTAM</span><h1>Uma boa conversa começa aqui.</h1><p>Conte sua ideia. Sua mensagem será registrada para nossa equipe.</p></section><section class=\\"card\\"><h2>Vamos conversar</h2>{% for message in messages %}<p class=\\"notice\\" role=\\"status\\">{{ message }}</p>{% endfor %}<form method=\\"post\\">{% csrf_token %}{{ form.as_p }}<button type=\\"submit\\">Enviar mensagem ↗</button></form></section>{% endblock %}", "templates/login.html": "{% extends \'base.html\' %}{% block content %}<section><span class=\\"tag\\">ÁREA DA EQUIPE</span><h1>Acesse sua caixa de entrada.</h1><p>Use uma conta de equipe desta aplicação.</p></section><section class=\\"card\\"><form method=\\"post\\">{% csrf_token %}{{ form.as_p }}<input type=\\"hidden\\" name=\\"next\\" value=\\"{{ next }}\\"><button type=\\"submit\\">Entrar</button></form></section>{% endblock %}", "templates/inbox.html": "{% extends \'base.html\' %}{% block content %}<section class=\\"wide\\"><h1>Caixa de entrada.</h1><form method=\\"post\\" action=\\"{% url \'logout\' %}\\">{% csrf_token %}<button>Sair</button></form></section><section class=\\"card wide\\"><p>Últimas 100 mensagens.</p>{% for record in records %}<article><h2>{{ record.name }} · #{{ record.pk }}</h2><p>{{ record.email }} · {{ record.created_at|date:\'d/m/Y H:i\' }}</p><p class=\\"message\\">{{ record.message }}</p></article>{% empty %}<p>Nenhuma mensagem recebida.</p>{% endfor %}</section>{% endblock %}", "README.md": "# Studio Contact — Django\\n\\nModel ContactMessage, formulário público com CSRF e caixa de entrada para equipe.\\nUsa exclusivamente PostgreSQL via DATABASE_URL. Não contém credenciais nem SQLite.\\nAs tabelas da versão anterior com psycopg direto não são apagadas nem importadas.\\nO novo model usa a tabela contacts_contactmessage.\\n\\n## Instalação no computador\\n\\npython3 py.py --install\\nsource .venv/bin/activate\\n\\nO instalador faz backup dos arquivos substituídos em .installer-backups/.\\nDefina SECRET_KEY, DATABASE_URL e ALLOWED_HOSTS no ambiente antes de executar Django.\\nPara HTTP local apenas: DEBUG=true. Não use DEBUG=true na publicação.\\nO instalador não cria banco, usuário nem executa migrations.\\n\\n## Studio\\n\\nAplicação web; raiz do repositório; build vazio; porta 8000; health check /healthz.\\nInicialização: python py.py\\nA imagem aprovada precisa conter Django 5.2, psycopg 3.3.2 e gunicorn 23.\\nrequirements.txt não é instalado automaticamente pelo runtime offline.\\n\\nVariáveis obrigatórias:\\n- SECRET_KEY: valor aleatório secreto, gerado e armazenado nas variáveis do app.\\n- DATABASE_URL: fornecida pelo provisionamento exclusivo do Studio.\\n- ALLOWED_HOSTS: hostname público do app, sem https://, separado por vírgula se necessário.\\n- CSRF_TRUSTED_ORIGINS: origem HTTPS pública completa do app.\\n- TRUST_PROXY_HTTPS=true apenas com proxy confiável que substitua X-Forwarded-Proto.\\n\\n## Migrações e equipe\\n\\nA migração contacts/migrations/0001_initial.py já está versionada.\\nPreparação do banco (no runtime, depois do provisionamento): python manage.py migrate --noinput\\nCriação da conta da aplicação: python manage.py createsuperuser\\nEssa conta só administra este app; não é o superuser da plataforma LojasNova.\\nTambém é possível criar uma conta is_staff sem privilégios de superuser.\\nNão versionar senhas, dumps, .env ou .venv.\\n\\nComandos adicionais: python py.py check / python py.py migrate --noinput\\nDesenvolvimento: python py.py runserver 127.0.0.1:8000\\nTestes (banco exclusivo de testes): python manage.py test contacts\\nO servidor padrão usa Gunicorn, escuta em 0.0.0.0 e não executa migrations sozinho.\\nO painel ainda precisa oferecer a etapa de migrate e criação segura da primeira conta.\\nAntes de tráfego público amplo, configurar rate limiting do login e antispam no proxy.\\n"}')
 
 
-def install():
-    environment = BASE / ".venv"
-    if not (environment / "bin/python").exists():
-        venv.EnvBuilder(with_pip=True).create(environment)
-
-    subprocess.run(
-        [
-            str(environment / "bin/python"),
-            "-m", "pip", "install", "psycopg[binary]==3.3.2"
-        ],
-        check=True,
-    )
-
-    directory = BASE / "app_teste"
-    directory.mkdir(exist_ok=True)
-
-    for name, content in {
-        "index.html": PAGE,
-        "admin.html": ADMIN,
-        "style.css": CSS,
-        "app.js": JS,
-    }.items():
-        target = directory / name
-        if target.exists() and not target.with_suffix(target.suffix + ".bak").exists():
-            target.with_suffix(target.suffix + ".bak").write_bytes(target.read_bytes())
+def install(write_only=False):
+    # Execução explícita local. O start de produção nunca escreve no código.
+    backup = BASE / ".installer-backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    for name, content in FILES.items():
+        target = BASE / name
+        if target.exists() and target.read_text(encoding="utf-8") != content:
+            saved = backup / name
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, saved)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-
-    (BASE / "requirements.txt").write_text(
-        "psycopg[binary]==3.3.2\n", encoding="utf-8"
-    )
-
     ignore = BASE / ".gitignore"
-    existing = ignore.read_text() if ignore.exists() else ""
-    entries = [".venv/", ".env", "__pycache__/", "*.bak"]
+    existing = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
+    entries = [".env", ".venv/", "__pycache__/", "*.pyc", "*.bak", ".installer-backups/"]
     missing = [entry for entry in entries if entry not in existing.splitlines()]
     if missing:
-        ignore.write_text(existing.rstrip() + "\n" + "\n".join(missing) + "\n")
-
-    print("Instalação concluída.")
-    print("Configure DATABASE_URL e ADMIN_PASSWORD antes de iniciar.")
-    print("Iniciar: .venv/bin/python py.py")
-
-
-def database():
-    import psycopg
-
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("Configure DATABASE_URL para um PostgreSQL.")
-
-    return psycopg.connect(
-        url,
-        connect_timeout=5,
-        options="-c statement_timeout=5000",
-    )
-
-
-def migrate():
-    with database() as connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS contact_messages (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                name VARCHAR(100) NOT NULL,
-                email VARCHAR(254) NOT NULL,
-                message VARCHAR(3000) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-
-class Handler(BaseHTTPRequestHandler):
-    def setup(self):
-        super().setup()
-        self.connection.settimeout(15)
-
-    def respond(self, status, content, content_type="application/json; charset=utf-8"):
-        if not isinstance(content, bytes):
-            content = json.dumps(content, ensure_ascii=False).encode()
-
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'none'; form-action 'self'"
-        )
-        self.end_headers()
-        self.wfile.write(content)
-
-    def authenticated(self):
-        expected = os.environ.get("ADMIN_PASSWORD", "")
-        try:
-            scheme, encoded = self.headers.get("Authorization", "").split(" ", 1)
-            username, password = base64.b64decode(
-                encoded, validate=True
-            ).decode().split(":", 1)
-
-            return (
-                bool(expected)
-                and scheme == "Basic"
-                and hmac.compare_digest(username.encode(), b"admin")
-                and hmac.compare_digest(password.encode(), expected.encode())
-            )
-        except (ValueError, UnicodeError):
-            return False
-
-    def do_GET(self):
-        path = self.path.split("?", 1)[0]
-
-        if path == "/healthz":
-            try:
-                with database() as connection:
-                    connection.execute("SELECT id FROM contact_messages LIMIT 0")
-                return self.respond(200, {"status": "ok", "database": "ready"})
-            except Exception:
-                return self.respond(503, {"status": "unavailable"})
-
-        if path == "/api/messages":
-            if not self.authenticated():
-                return self.respond(401, {"error": "Credenciais inválidas."})
-
-            try:
-                from psycopg.rows import dict_row
-
-                with database() as connection:
-                    messages = connection.cursor(row_factory=dict_row).execute("""
-                        SELECT id, name, email, message, created_at::text
-                        FROM contact_messages
-                        ORDER BY id DESC
-                        LIMIT 100
-                    """).fetchall()
-
-                return self.respond(200, {"messages": messages})
-            except Exception:
-                return self.respond(503, {"error": "Banco indisponível."})
-
-        routes = {
-            "/": ("index.html", "text/html; charset=utf-8"),
-            "/admin": ("admin.html", "text/html; charset=utf-8"),
-            "/style.css": ("style.css", "text/css; charset=utf-8"),
-            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-        }
-
-        if path in routes:
-            filename, content_type = routes[path]
-            target = BASE / "app_teste" / filename
-            if target.is_file():
-                return self.respond(200, target.read_bytes(), content_type)
-
-        self.respond(404, {"error": "Página não encontrada."})
-
-    def do_POST(self):
-        if self.path != "/api/messages":
-            return self.respond(404, {"error": "Página não encontrada."})
-
-        if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            return self.respond(403, {"error": "Origem não permitida."})
-
-        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-            return self.respond(415, {"error": "Envie JSON."})
-
-        try:
-            size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 16384:
-                return self.respond(413, {"error": "Conteúdo muito grande ou vazio."})
-
-            payload = json.loads(self.rfile.read(size))
-            if not isinstance(payload, dict):
-                raise ValueError()
-
-            values = [payload.get(key, "") for key in ("name", "email", "message")]
-            if not all(isinstance(value, str) for value in values):
-                raise ValueError()
-
-            name, email, message = [value.strip() for value in values]
-
-            if not (
-                1 <= len(name) <= 100
-                and len(email) <= 254
-                and re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", email)
-                and 1 <= len(message) <= 3000
-            ):
-                raise ValueError()
-
-        except (ValueError, UnicodeError):
-            return self.respond(400, {"error": "Confira nome, e-mail e mensagem."})
-
-        try:
-            with database() as connection:
-                identifier = connection.execute(
-                    """INSERT INTO contact_messages (name, email, message)
-                       VALUES (%s, %s, %s) RETURNING id""",
-                    (name, email, message),
-                ).fetchone()[0]
-
-            self.respond(201, {
-                "id": identifier,
-                "message": "Mensagem recebida com sucesso.",
-            })
-        except Exception:
-            self.respond(503, {"error": "Não foi possível salvar. Tente novamente."})
+        ignore.write_text(existing.rstrip() + "\n" + "\n".join(missing) + "\n", encoding="utf-8")
+    if not write_only:
+        environment = BASE / ".venv"
+        python = environment / "bin/python"
+        if not python.exists():
+            venv.EnvBuilder(with_pip=True).create(environment)
+        subprocess.run([str(python), "-m", "pip", "install", "-r", str(BASE / "requirements.txt")], check=True)
+    print("Arquivos Django criados. Backups em .installer-backups/ quando necessário.")
+    print("Nenhum banco foi criado e nenhuma migração foi executada.")
+    print("Leia README.md antes de publicar. Não rode --install no start do Studio.")
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--install", action="store_true")
-    parser.add_argument("--migrate", action="store_true")
-    args = parser.parse_args()
-
-    if args.install:
-        install()
+    if len(sys.argv) > 1 and sys.argv[1] in ("--install", "--write-only"):
+        install(write_only=sys.argv[1] == "--write-only")
         return
-
-    if not os.environ.get("ADMIN_PASSWORD"):
-        raise SystemExit("Configure ADMIN_PASSWORD antes de iniciar.")
-
-    try:
-        migrate()
-    except ImportError:
-        raise SystemExit(
-            "Driver ausente. Execute python3 py.py --install localmente "
-            "ou use a imagem PostgreSQL aprovada no Studio."
-        )
-
-    if args.migrate:
-        print("Tabela preparada.")
-        return
-
+    if not (BASE / "manage.py").exists():
+        raise SystemExit("Execute python3 py.py --install no computador primeiro.")
+    if len(sys.argv) > 1:
+        raise SystemExit(subprocess.call([sys.executable, str(BASE / "manage.py"), *sys.argv[1:]], cwd=BASE))
     port = int(os.environ.get("PORT", "8000"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"Servidor iniciado na porta {port}.")
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    os.chdir(BASE)
+    os.execv(sys.executable, [sys.executable, "-m", "gunicorn", "config.wsgi:application", "--bind", f"0.0.0.0:{port}", "--workers", "1", "--threads", "2", "--access-logfile", "-", "--error-logfile", "-"])
 
 
 if __name__ == "__main__":
     main()
+

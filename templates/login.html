@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<section><span class="tag">ÁREA DA EQUIPE</span><h1>Acesse sua caixa de entrada.</h1><p>Use uma conta de equipe desta aplicação.</p></section><section class="card"><form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button type="submit">Entrar</button></form></section>{% endblock %}
