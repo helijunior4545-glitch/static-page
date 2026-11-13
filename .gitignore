@@ -5,3 +5,5 @@ __pycache__/
 *.bak
 *.pyc
 .installer-backups/
+.env.*
+!.env.example

@@ -1,0 +1,12 @@
+# Optional override: existing isolated app network, after platform preparation.
+# docker compose -f compose.yaml -f compose.studio.yaml up --build -d
+services:
+  app:
+    networks:
+      - project-network
+    security_opt:
+      - seccomp=${STUDIO_SECCOMP_PROFILE:?Configure o perfil instalado pelo agente}
+networks:
+  project-network:
+    external: true
+    name: ${STUDIO_APP_NETWORK:?Configure a rede exclusiva do projeto}
