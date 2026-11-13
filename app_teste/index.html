@@ -1,45 +1,30 @@
 <!doctype html>
-
 <html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Meu App Teste</title>
-    <style>
-      * { box-sizing: border-box; }
-      body {
-          margin: 0;
-          min-height: 100vh;
-          display: grid;
-          place-items: center;
-          font-family: Arial, sans-serif;
-          background: #f5f6f8;
-      }
-      main {
-          background: white;
-          padding: 50px;
-          border-radius: 16px;
-          text-align: center;
-          box-shadow: 0 8px 30px #00000010;
-      }
-      h1 { color: #171717; }
-      p { color: #666; }
-      button {
-          padding: 12px 24px;
-          border: 0;
-          border-radius: 8px;
-          background: #171717;
-          color: white;
-          cursor: pointer;
-      }
-      button:hover { background: #444; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Meu App de Teste</h1>
-      <p>Aplicação estática funcionando!</p>
-      <button onclick="alert('Tudo funcionando!')">Testar aplicação</button>
-    </main>
-  </body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio Contact</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header><a href="/">◈ Studio Contact</a><a href="/admin">Área da equipe ↗</a></header>
+<main>
+<section>
+<span class="tag">IDEIAS QUE CONECTAM</span>
+<h1>Uma boa conversa<br>começa aqui.</h1>
+<p>Conte sua ideia. Sua mensagem será registrada para nossa equipe.</p>
+</section>
+<section class="card">
+<h2>Vamos conversar</h2>
+<form id="contact">
+<label>Nome<input name="name" maxlength="100" autocomplete="name" required></label>
+<label>E-mail<input name="email" type="email" maxlength="254" autocomplete="email" required></label>
+<label>Mensagem<textarea name="message" maxlength="3000" rows="5" required></textarea></label>
+<button>Enviar mensagem ↗</button>
+<p id="feedback" role="status"></p>
+</form>
+</section>
+</main>
+</body>
 </html>
